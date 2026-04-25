@@ -2,9 +2,17 @@
 
 Consumes URLs from the `discovered-urls` Kafka topic, fetches each page respecting `robots.txt` and per-domain rate limits, deduplicates via Redis, and publishes gzip-compressed HTML to the `crawled-urls` topic for downstream parsing.
 
+Seed URLs are injected into the pipeline by [`crawler-seed`](../crawler-seed), which exposes a `POST /seed` HTTP API.
+
 ## Architecture overview
 
 ```
+POST /seed
+    │
+    ▼
+crawler-seed (HTTP server)
+    │
+    ▼
 [discovered-urls]  ──►  crawler-worker  ──►  [crawled-urls]
                               │
                         Redis (dedup)
