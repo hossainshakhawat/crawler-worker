@@ -1,14 +1,15 @@
 # crawler-worker configuration
 # All values can be overridden by environment variables prefixed with WORKER_
 # e.g. WORKER_KAFKA_BROKER, WORKER_REDIS_ADDR, WORKER_WORKERS, WORKER_TIMEOUT,
-#      WORKER_MAX_BODY, WORKER_CRAWL_DELAY, WORKER_AGENT
-# Flags (e.g. -kafka, -redis) take the highest precedence and override both
-# environment variables and this file.
+#      WORKER_MAX_BODY, WORKER_CRAWL_DELAY, WORKER_AGENT,
+#      WORKER_TOPIC_DISCOVERED, WORKER_TOPIC_CRAWLED
 
-kafka_broker: "localhost:9092"
-redis_addr:   "localhost:6379"
-workers:      8
-timeout:      "15s"
-max_body:     5242880   # 5 MiB
-crawl_delay:  "100ms"
-agent:        "go-web-crawler/1.0"
+kafka_broker:     "localhost:9092"
+redis_addr:       "localhost:6379"
+workers:          8
+timeout:          "15s"
+max_body:         5242880   # 5 MiB
+crawl_delay:      "100ms"
+agent:            "go-web-crawler/1.0"
+topic_discovered: "discovered-urls"
+topic_crawled:    "crawled-urls"

@@ -38,13 +38,15 @@ const (
 )
 
 type config struct {
-	kafkaBroker string
-	redisAddr   string
-	numWorkers  int
-	timeout     time.Duration
-	maxBody     int64
-	crawlDelay  time.Duration
-	agent       string
+	kafkaBroker     string
+	redisAddr       string
+	numWorkers      int
+	timeout         time.Duration
+	maxBody         int64
+	crawlDelay      time.Duration
+	agent           string
+	topicDiscovered string
+	topicCrawled    string
 }
 
 func loadConfig() config {
@@ -62,13 +64,15 @@ func loadConfig() config {
 	}
 
 	return config{
-		kafkaBroker: viper.GetString("kafka_broker"),
-		redisAddr:   viper.GetString("redis_addr"),
-		numWorkers:  viper.GetInt("workers"),
-		timeout:     viper.GetDuration("timeout"),
-		maxBody:     viper.GetInt64("max_body"),
-		crawlDelay:  viper.GetDuration("crawl_delay"),
-		agent:       viper.GetString("agent"),
+		kafkaBroker:     viper.GetString("kafka_broker"),
+		redisAddr:       viper.GetString("redis_addr"),
+		numWorkers:      viper.GetInt("workers"),
+		timeout:         viper.GetDuration("timeout"),
+		maxBody:         viper.GetInt64("max_body"),
+		crawlDelay:      viper.GetDuration("crawl_delay"),
+		agent:           viper.GetString("agent"),
+		topicDiscovered: viper.GetString("topic_discovered"),
+		topicCrawled:    viper.GetString("topic_crawled"),
 	}
 }
 
@@ -94,7 +98,7 @@ func main() {
 	}
 	defer redisClient.Close()
 
-	kafkaClient, err := kafkaconn.New(cfg.kafkaBroker, consumerGroup)
+	kafkaClient, err := kafkaconn.New(cfg.kafkaBroker, consumerGroup, cfg.topicDiscovered)
 	if err != nil {
 		log.Fatalf("kafka: %v", err)
 	}
@@ -106,7 +110,7 @@ func main() {
 
 	log.Printf("crawler-worker started: group=%s workers=%d", consumerGroup, cfg.numWorkers)
 
-	run(ctx, kafkaClient, redisClient, httpFetcher, robotsChecker, rateLimiter, cfg.numWorkers)
+	run(ctx, kafkaClient, redisClient, httpFetcher, robotsChecker, rateLimiter, cfg.numWorkers, cfg.topicCrawled)
 }
 
 func run(
@@ -117,6 +121,7 @@ func run(
 	robotsChecker *robots.Checker,
 	rateLimiter *ratelimiter.DomainLimiter,
 	numWorkers int,
+	topicCrawled string,
 ) {
 	semaphore := make(chan struct{}, numWorkers)
 
@@ -155,7 +160,7 @@ func run(
 			wg.Add(1)
 			go func(event events.DiscoveredURL) {
 				defer func() { <-semaphore; wg.Done() }()
-				processURL(ctx, event, kafkaClient, httpFetcher, robotsChecker, rateLimiter)
+					processURL(ctx, event, kafkaClient, httpFetcher, robotsChecker, rateLimiter, topicCrawled)
 			}(event)
 		})
 		wg.Wait()

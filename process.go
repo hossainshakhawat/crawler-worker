@@ -22,6 +22,7 @@ func processURL(
 	httpFetcher *fetcher.Fetcher,
 	robotsChecker *robots.Checker,
 	rateLimiter *ratelimiter.DomainLimiter,
+	topicCrawled string,
 ) {
 	// ① Robots.txt
 	if !robotsChecker.Allowed(event.URL) {
@@ -72,7 +73,7 @@ func processURL(
 		return
 	}
 	kafkaRecord := &kgo.Record{
-		Topic: events.TopicCrawled,
+		Topic: topicCrawled,
 		Key:   []byte(finalURL),
 		Value: payload,
 	}

@@ -24,17 +24,19 @@ Multiple instances of `crawler-worker` can run in parallel under the same Kafka 
 
 ## Configuration
 
-All options are passed as command-line flags.
+Configuration is read from `config.yml` in the working directory. All keys can be overridden by environment variables with the `WORKER_` prefix (e.g. `WORKER_KAFKA_BROKER`).
 
-| Flag           | Default              | Description                                       |
-|----------------|----------------------|---------------------------------------------------|
-| `-kafka`       | `localhost:9092`     | Kafka broker address                              |
-| `-redis`       | `localhost:6379`     | Redis address for URL deduplication               |
-| `-workers`     | `8`                  | Number of parallel fetch goroutines               |
-| `-timeout`     | `15s`                | Per-request HTTP timeout                          |
-| `-max-body`    | `5242880` (5 MiB)    | Maximum response body size in bytes               |
-| `-crawl-delay` | `1s`                 | Minimum delay between requests to the same domain |
-| `-agent`       | `go-web-crawler/1.0` | `User-Agent` header sent with every request       |
+| Key                | Default              | Env var                    | Description                                       |
+|--------------------|----------------------|----------------------------|---------------------------------------------------|
+| `kafka_broker`     | `localhost:9092`     | `WORKER_KAFKA_BROKER`      | Kafka broker address                              |
+| `redis_addr`       | `localhost:6379`     | `WORKER_REDIS_ADDR`        | Redis address for URL deduplication               |
+| `workers`          | `8`                  | `WORKER_WORKERS`           | Number of parallel fetch goroutines               |
+| `timeout`          | `15s`                | `WORKER_TIMEOUT`           | Per-request HTTP timeout                          |
+| `max_body`         | `5242880` (5 MiB)    | `WORKER_MAX_BODY`          | Maximum response body size in bytes               |
+| `crawl_delay`      | `100ms`              | `WORKER_CRAWL_DELAY`       | Minimum delay between requests to the same domain |
+| `agent`            | `go-web-crawler/1.0` | `WORKER_AGENT`             | `User-Agent` header sent with every request       |
+| `topic_discovered` | `discovered-urls`    | `WORKER_TOPIC_DISCOVERED`  | Kafka topic to consume URLs from                  |
+| `topic_crawled`    | `crawled-urls`       | `WORKER_TOPIC_CRAWLED`     | Kafka topic to publish crawled pages to           |
 
 ## Running
 
@@ -42,22 +44,27 @@ All options are passed as command-line flags.
 # Build
 go build -o crawler-worker ./...
 
-# Run with defaults (Kafka and Redis on localhost)
+# Run with defaults (reads config.yml in the working directory)
 ./crawler-worker
 
-# Run with custom settings
-./crawler-worker \
-  -kafka broker:9092 \
-  -redis redis:6379 \
-  -workers 16 \
-  -timeout 30s \
-  -crawl-delay 2s \
-  -agent "mybot/1.0"
+# Override individual values with environment variables
+WORKER_KAFKA_BROKER=broker:9092 \
+WORKER_REDIS_ADDR=redis:6379 \
+WORKER_WORKERS=16 \
+WORKER_TIMEOUT=30s \
+WORKER_CRAWL_DELAY=2s \
+WORKER_AGENT=mybot/1.0 \
+./crawler-worker
+
+# Use custom Kafka topics
+WORKER_TOPIC_DISCOVERED=my-urls \
+WORKER_TOPIC_CRAWLED=my-pages \
+./crawler-worker
 
 # Run multiple instances for higher throughput (same consumer group)
-./crawler-worker -kafka broker:9092 &
-./crawler-worker -kafka broker:9092 &
-./crawler-worker -kafka broker:9092 &
+./crawler-worker &
+./crawler-worker &
+./crawler-worker &
 ```
 
 Shut down gracefully with `SIGINT` or `SIGTERM`. The worker commits Kafka offsets before exiting.
@@ -97,7 +104,9 @@ Pages with HTTP status ≥ 400 are logged and dropped (not published).
 
 ## Kafka topics
 
-| Topic             | Direction | Message type    |
-|-------------------|-----------|-----------------|
-| `discovered-urls` | Consume   | `DiscoveredURL` |
-| `crawled-urls`    | Produce   | `CrawledPage`   |
+Topic names are configurable via `config.yml` or environment variables (see Configuration above).
+
+| Config key         | Default           | Direction | Message type    |
+|--------------------|-------------------|-----------|-----------------|
+| `topic_discovered` | `discovered-urls` | Consume   | `DiscoveredURL` |
+| `topic_crawled`    | `crawled-urls`    | Produce   | `CrawledPage`   |
