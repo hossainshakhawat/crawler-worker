@@ -26,8 +26,8 @@ func New(agent string) *Checker {
 	}
 }
 
-func (c *Checker) Allowed(u string) bool {
-	host, path, err := hostAndPath(u)
+func (c *Checker) Allowed(rawURL string) bool {
+	host, path, err := hostAndPath(rawURL)
 	if err != nil {
 		return true
 	}
@@ -43,31 +43,31 @@ func (c *Checker) Allowed(u string) bool {
 	return true
 }
 
-func hostAndPath(u string) (string, string, error) {
-	idx := strings.Index(u, "://")
-	if idx < 0 {
+func hostAndPath(rawURL string) (string, string, error) {
+	schemeIndex := strings.Index(rawURL, "://")
+	if schemeIndex < 0 {
 		return "", "", nil
 	}
-	rest := u[idx+3:]
-	slash := strings.IndexByte(rest, '/')
-	if slash < 0 {
-		return rest, "/", nil
+	withoutScheme := rawURL[schemeIndex+3:]
+	slashIndex := strings.IndexByte(withoutScheme, '/')
+	if slashIndex < 0 {
+		return withoutScheme, "/", nil
 	}
-	return rest[:slash], rest[slash:], nil
+	return withoutScheme[:slashIndex], withoutScheme[slashIndex:], nil
 }
 
 func (c *Checker) getRules(host string) *rules {
 	c.mu.Lock()
-	if r, ok := c.cache[host]; ok {
+	if cachedRules, ok := c.cache[host]; ok {
 		c.mu.Unlock()
-		return r
+		return cachedRules
 	}
 	c.mu.Unlock()
-	r := c.fetchRules(host)
+	fetchedRules := c.fetchRules(host)
 	c.mu.Lock()
-	c.cache[host] = r
+	c.cache[host] = fetchedRules
 	c.mu.Unlock()
-	return r
+	return fetchedRules
 }
 
 func (c *Checker) fetchRules(host string) *rules {
@@ -85,9 +85,9 @@ func (c *Checker) fetchRules(host string) *rules {
 	return parseRobots(resp.Body, c.agent)
 }
 
-func parseRobots(r io.Reader, agent string) *rules {
-	scanner := bufio.NewScanner(r)
-	var applies bool
+func parseRobots(reader io.Reader, agent string) *rules {
+	scanner := bufio.NewScanner(reader)
+	var agentApplies bool
 	var result rules
 	agentLower := strings.ToLower(agent)
 	for scanner.Scan() {
@@ -99,15 +99,15 @@ func parseRobots(r io.Reader, agent string) *rules {
 		if len(parts) != 2 {
 			continue
 		}
-		key := strings.ToLower(strings.TrimSpace(parts[0]))
-		val := strings.TrimSpace(parts[1])
-		switch key {
+		fieldKey := strings.ToLower(strings.TrimSpace(parts[0]))
+		fieldValue := strings.TrimSpace(parts[1])
+		switch fieldKey {
 		case "user-agent":
-			v := strings.ToLower(val)
-			applies = v == "*" || strings.Contains(agentLower, v)
+			agentName := strings.ToLower(fieldValue)
+			agentApplies = agentName == "*" || strings.Contains(agentLower, agentName)
 		case "disallow":
-			if applies && val != "" {
-				result.disallowed = append(result.disallowed, val)
+			if agentApplies && fieldValue != "" {
+				result.disallowed = append(result.disallowed, fieldValue)
 			}
 		}
 	}

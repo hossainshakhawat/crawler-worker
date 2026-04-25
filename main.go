@@ -20,8 +20,6 @@
 package main
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"flag"
@@ -32,12 +30,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shakhawathossain/crawler-worker/events"
-	"github.com/shakhawathossain/crawler-worker/internal/fetcher"
-	"github.com/shakhawathossain/crawler-worker/internal/kafkaconn"
-	"github.com/shakhawathossain/crawler-worker/internal/ratelimiter"
-	"github.com/shakhawathossain/crawler-worker/internal/redisconn"
-	"github.com/shakhawathossain/crawler-worker/internal/robots"
+	"github.com/hossainshakhawat/crawler-worker/events"
+	"github.com/hossainshakhawat/crawler-worker/internal/fetcher"
+	"github.com/hossainshakhawat/crawler-worker/internal/kafkaconn"
+	"github.com/hossainshakhawat/crawler-worker/internal/ratelimiter"
+	"github.com/hossainshakhawat/crawler-worker/internal/redisconn"
+	"github.com/hossainshakhawat/crawler-worker/internal/robots"
+	"github.com/redis/go-redis/v9"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -46,50 +45,79 @@ const (
 	redisSeenKey  = "webcrawler:seen_urls"
 )
 
+type config struct {
+	kafkaBroker string
+	redisAddr   string
+	numWorkers  int
+	timeout     time.Duration
+	maxBody     int64
+	crawlDelay  time.Duration
+	agent       string
+}
+
+func parseFlags() config {
+	var cfg config
+	flag.StringVar(&cfg.kafkaBroker, "kafka", "localhost:9092", "Kafka broker address")
+	flag.StringVar(&cfg.redisAddr, "redis", "localhost:6379", "Redis address for URL dedup")
+	flag.IntVar(&cfg.numWorkers, "workers", 8, "Parallel fetch goroutines")
+	flag.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "Per-request HTTP timeout")
+	flag.Int64Var(&cfg.maxBody, "max-body", 5<<20, "Maximum response body bytes")
+	flag.DurationVar(&cfg.crawlDelay, "crawl-delay", 1*time.Second, "Per-domain politeness delay")
+	flag.StringVar(&cfg.agent, "agent", "go-web-crawler/1.0", "User-Agent string")
+	flag.Parse()
+	return cfg
+}
+
+func listenForShutdown(cancel context.CancelFunc) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() { <-sigs; log.Println("shutting down"); cancel() }()
+}
+
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
-	kafkaBroker := flag.String("kafka", "localhost:9092", "Kafka broker address")
-	redisAddr := flag.String("redis", "localhost:6379", "Redis address for URL dedup")
-	numWorkers := flag.Int("workers", 8, "Parallel fetch goroutines")
-	timeout := flag.Duration("timeout", 15*time.Second, "Per-request HTTP timeout")
-	maxBody := flag.Int64("max-body", 5<<20, "Maximum response body bytes")
-	crawlDelay := flag.Duration("crawl-delay", 1*time.Second, "Per-domain politeness delay")
-	agent := flag.String("agent", "go-web-crawler/1.0", "User-Agent string")
-	flag.Parse()
+	cfg := parseFlags()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-sigs; log.Println("shutting down"); cancel() }()
+	listenForShutdown(cancel)
 
-	// ── Redis dedup ───────────────────────────────────────────────────────────
-	rdb, err := redisconn.New(ctx, *redisAddr)
+	redisClient, err := redisconn.New(ctx, cfg.redisAddr)
 	if err != nil {
 		log.Fatalf("redis: %v", err)
 	}
-	defer rdb.Close()
+	defer redisClient.Close()
 
-	// ── Kafka consumer + producer ─────────────────────────────────────────────
-	cl, err := kafkaconn.New(*kafkaBroker, consumerGroup)
+	kafkaClient, err := kafkaconn.New(cfg.kafkaBroker, consumerGroup)
 	if err != nil {
 		log.Fatalf("kafka: %v", err)
 	}
-	defer cl.Close()
+	defer kafkaClient.Close()
 
-	// ── Shared components ─────────────────────────────────────────────────────
-	fet := fetcher.New(*timeout, *maxBody, *agent)
-	rob := robots.New(*agent)
-	rl := ratelimiter.New(*crawlDelay)
+	httpFetcher := fetcher.New(cfg.timeout, cfg.maxBody, cfg.agent)
+	robotsChecker := robots.New(cfg.agent)
+	rateLimiter := ratelimiter.New(cfg.crawlDelay)
 
-	sem := make(chan struct{}, *numWorkers) // bounded concurrency
+	log.Printf("crawler-worker started: group=%s workers=%d", consumerGroup, cfg.numWorkers)
 
-	log.Printf("crawler-worker started: group=%s workers=%d", consumerGroup, *numWorkers)
+	run(ctx, kafkaClient, redisClient, httpFetcher, robotsChecker, rateLimiter, cfg.numWorkers)
+}
+
+func run(
+	ctx context.Context,
+	kafkaClient *kgo.Client,
+	redisClient *redis.Client,
+	httpFetcher *fetcher.Fetcher,
+	robotsChecker *robots.Checker,
+	rateLimiter *ratelimiter.DomainLimiter,
+	numWorkers int,
+) {
+	semaphore := make(chan struct{}, numWorkers)
 
 	for {
-		fetches := cl.PollFetches(ctx)
+		fetches := kafkaClient.PollFetches(ctx)
 		if ctx.Err() != nil {
 			break
 		}
@@ -101,117 +129,35 @@ func main() {
 		}
 
 		var wg sync.WaitGroup
-		fetches.EachRecord(func(r *kgo.Record) {
-			var ev events.DiscoveredURL
-			if err := json.Unmarshal(r.Value, &ev); err != nil {
+		fetches.EachRecord(func(record *kgo.Record) {
+			var event events.DiscoveredURL
+			if err := json.Unmarshal(record.Value, &event); err != nil {
 				log.Printf("unmarshal: %v", err)
 				return
 			}
 
 			// Dedup check via Redis SADD (returns 1 if new, 0 if exists)
-			added, err := rdb.SAdd(ctx, redisSeenKey, ev.URL).Result()
+			added, err := redisClient.SAdd(ctx, redisSeenKey, event.URL).Result()
 			if err != nil {
-				log.Printf("[skip:redis-err] %s — %v", ev.URL, err)
+				log.Printf("[skip:redis-err] %s — %v", event.URL, err)
 				return
 			}
 			if added == 0 {
-				log.Printf("[skip:duplicate] %s", ev.URL)
+				log.Printf("[skip:duplicate] %s", event.URL)
 				return
 			}
 
-			sem <- struct{}{}
+			semaphore <- struct{}{}
 			wg.Add(1)
-			go func(ev events.DiscoveredURL) {
-				defer func() { <-sem; wg.Done() }()
-				processURL(ctx, ev, cl, fet, rob, rl)
-			}(ev)
+			go func(event events.DiscoveredURL) {
+				defer func() { <-semaphore; wg.Done() }()
+				processURL(ctx, event, kafkaClient, httpFetcher, robotsChecker, rateLimiter)
+			}(event)
 		})
 		wg.Wait()
 
-		if err := cl.CommitUncommittedOffsets(ctx); err != nil {
+		if err := kafkaClient.CommitUncommittedOffsets(ctx); err != nil {
 			log.Printf("commit offsets: %v", err)
 		}
 	}
-}
-
-func processURL(
-	ctx context.Context,
-	ev events.DiscoveredURL,
-	cl *kgo.Client,
-	fet *fetcher.Fetcher,
-	rob *robots.Checker,
-	rl *ratelimiter.DomainLimiter,
-) {
-	// ① Robots.txt
-	if !rob.Allowed(ev.URL) {
-		log.Printf("[robots]  %s", ev.URL)
-		return
-	}
-
-	// ② Rate limit
-	rl.Wait(ev.URL)
-
-	// ③ Fetch
-	resp := fet.Fetch(ctx, ev.URL)
-	if resp.Err != nil {
-		if ctx.Err() == nil {
-			log.Printf("[err]     %s — %v", ev.URL, resp.Err)
-		}
-		return
-	}
-	if resp.StatusCode >= 400 {
-		log.Printf("[%d]       %s", resp.StatusCode, ev.URL)
-		return
-	}
-
-	finalURL := resp.FinalURL
-	if finalURL == "" {
-		finalURL = ev.URL
-	}
-
-	// ④ Gzip-compress the body to keep Kafka message sizes small
-	compressed, err := gzipCompress(resp.Body)
-	if err != nil {
-		log.Printf("[compress] %s — %v", finalURL, err)
-		compressed = resp.Body // fall back to raw
-	}
-
-	// ⑤ Publish to crawled-urls
-	page := events.CrawledPage{
-		URL:        ev.URL,
-		FinalURL:   finalURL,
-		Depth:      ev.Depth,
-		HTTPStatus: resp.StatusCode,
-		Body:       compressed,
-		CrawledAt:  time.Now().UTC(),
-	}
-	val, err := json.Marshal(page)
-	if err != nil {
-		log.Printf("[marshal]  %s — %v", finalURL, err)
-		return
-	}
-	rec := &kgo.Record{
-		Topic: events.TopicCrawled,
-		Key:   []byte(finalURL),
-		Value: val,
-	}
-	if err := cl.ProduceSync(ctx, rec).FirstErr(); err != nil {
-		if ctx.Err() == nil {
-			log.Printf("[kafka]    %s — %v", finalURL, err)
-		}
-		return
-	}
-	log.Printf("[%d] depth=%-2d  %s", resp.StatusCode, ev.Depth, finalURL)
-}
-
-func gzipCompress(data []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	w := gzip.NewWriter(&buf)
-	if _, err := w.Write(data); err != nil {
-		return nil, err
-	}
-	if err := w.Close(); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }

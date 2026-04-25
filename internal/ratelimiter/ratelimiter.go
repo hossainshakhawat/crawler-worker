@@ -7,9 +7,9 @@ import (
 )
 
 type DomainLimiter struct {
-	mu       sync.Mutex
-	nextAt   map[string]time.Time
-	defDelay time.Duration
+	mu            sync.Mutex
+	nextAllowedAt map[string]time.Time
+	defaultDelay  time.Duration
 }
 
 func New(defaultDelay time.Duration) *DomainLimiter {
@@ -17,8 +17,8 @@ func New(defaultDelay time.Duration) *DomainLimiter {
 		defaultDelay = time.Second
 	}
 	return &DomainLimiter{
-		nextAt:   make(map[string]time.Time),
-		defDelay: defaultDelay,
+		nextAllowedAt: make(map[string]time.Time),
+		defaultDelay:  defaultDelay,
 	}
 }
 
@@ -28,14 +28,14 @@ func (d *DomainLimiter) Wait(rawURL string) {
 		return
 	}
 	d.mu.Lock()
-	next := d.nextAt[host]
+	next := d.nextAllowedAt[host]
 	now := time.Now()
 	var sleep time.Duration
 	if now.Before(next) {
 		sleep = next.Sub(now)
-		d.nextAt[host] = next.Add(d.defDelay)
+		d.nextAllowedAt[host] = next.Add(d.defaultDelay)
 	} else {
-		d.nextAt[host] = now.Add(d.defDelay)
+		d.nextAllowedAt[host] = now.Add(d.defaultDelay)
 	}
 	d.mu.Unlock()
 	if sleep > 0 {

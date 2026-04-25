@@ -9,9 +9,9 @@ import (
 
 // New creates a Redis client, pings the server to verify connectivity, and returns it.
 func New(ctx context.Context, addr string) (*redis.Client, error) {
-	rdb := redis.NewClient(&redis.Options{Addr: addr})
-	if err := rdb.Ping(ctx).Err(); err != nil {
+	client := redis.NewClient(&redis.Options{Addr: addr})
+	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("redis ping: %w", err)
 	}
-	return rdb, nil
+	return client, nil
 }

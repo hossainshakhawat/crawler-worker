@@ -1,10 +1,10 @@
-module github.com/shakhawathossain/crawler-worker
+module github.com/hossainshakhawat/crawler-worker
 
 go 1.25.0
 
 require (
 	github.com/redis/go-redis/v9 v9.18.0
-	github.com/twmb/franz-go v1.21.0
+	github.com/twmb/franz-go v1.20.7
 )
 
 require (

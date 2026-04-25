@@ -38,9 +38,9 @@ func New(timeout time.Duration, maxBytes int64, userAgent string) *Fetcher {
 	}
 }
 
-func (f *Fetcher) Fetch(ctx context.Context, u string) Response {
-	resp := Response{URL: u}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+func (f *Fetcher) Fetch(ctx context.Context, rawURL string) Response {
+	resp := Response{URL: rawURL}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		resp.Err = err
 		return resp
@@ -48,19 +48,19 @@ func (f *Fetcher) Fetch(ctx context.Context, u string) Response {
 	req.Header.Set("User-Agent", f.userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-	r, err := f.client.Do(req)
+	httpResp, err := f.client.Do(req)
 	if err != nil {
 		resp.Err = err
 		return resp
 	}
-	defer r.Body.Close()
+	defer httpResp.Body.Close()
 
-	resp.FinalURL = r.Request.URL.String()
-	resp.StatusCode = r.StatusCode
+	resp.FinalURL = httpResp.Request.URL.String()
+	resp.StatusCode = httpResp.StatusCode
 
-	reader := io.Reader(r.Body)
+	reader := io.Reader(httpResp.Body)
 	if f.maxBytes > 0 {
-		reader = io.LimitReader(r.Body, f.maxBytes)
+		reader = io.LimitReader(httpResp.Body, f.maxBytes)
 	}
 	body, err := io.ReadAll(reader)
 	if err != nil {
