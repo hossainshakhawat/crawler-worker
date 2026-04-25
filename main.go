@@ -32,29 +32,30 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/shakhawathossain/crawler-worker/events"
 	"github.com/shakhawathossain/crawler-worker/internal/fetcher"
+	"github.com/shakhawathossain/crawler-worker/internal/kafkaconn"
 	"github.com/shakhawathossain/crawler-worker/internal/ratelimiter"
+	"github.com/shakhawathossain/crawler-worker/internal/redisconn"
 	"github.com/shakhawathossain/crawler-worker/internal/robots"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 const (
-	consumerGroup  = "crawler-workers"
-	redisSeenKey   = "webcrawler:seen_urls"
+	consumerGroup = "crawler-workers"
+	redisSeenKey  = "webcrawler:seen_urls"
 )
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
 	kafkaBroker := flag.String("kafka", "localhost:9092", "Kafka broker address")
-	redisAddr   := flag.String("redis", "localhost:6379", "Redis address for URL dedup")
-	numWorkers  := flag.Int("workers", 8, "Parallel fetch goroutines")
-	timeout     := flag.Duration("timeout", 15*time.Second, "Per-request HTTP timeout")
-	maxBody     := flag.Int64("max-body", 5<<20, "Maximum response body bytes")
-	crawlDelay  := flag.Duration("crawl-delay", 1*time.Second, "Per-domain politeness delay")
-	agent       := flag.String("agent", "go-web-crawler/1.0", "User-Agent string")
+	redisAddr := flag.String("redis", "localhost:6379", "Redis address for URL dedup")
+	numWorkers := flag.Int("workers", 8, "Parallel fetch goroutines")
+	timeout := flag.Duration("timeout", 15*time.Second, "Per-request HTTP timeout")
+	maxBody := flag.Int64("max-body", 5<<20, "Maximum response body bytes")
+	crawlDelay := flag.Duration("crawl-delay", 1*time.Second, "Per-domain politeness delay")
+	agent := flag.String("agent", "go-web-crawler/1.0", "User-Agent string")
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -65,28 +66,23 @@ func main() {
 	go func() { <-sigs; log.Println("shutting down"); cancel() }()
 
 	// ── Redis dedup ───────────────────────────────────────────────────────────
-	rdb := redis.NewClient(&redis.Options{Addr: *redisAddr})
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("redis ping: %v", err)
+	rdb, err := redisconn.New(ctx, *redisAddr)
+	if err != nil {
+		log.Fatalf("redis: %v", err)
 	}
 	defer rdb.Close()
 
 	// ── Kafka consumer + producer ─────────────────────────────────────────────
-	cl, err := kgo.NewClient(
-		kgo.SeedBrokers(*kafkaBroker),
-		kgo.ConsumerGroup(consumerGroup),
-		kgo.ConsumeTopics(events.TopicDiscovered),
-		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
-	)
+	cl, err := kafkaconn.New(*kafkaBroker, consumerGroup)
 	if err != nil {
-		log.Fatalf("kafka client: %v", err)
+		log.Fatalf("kafka: %v", err)
 	}
 	defer cl.Close()
 
 	// ── Shared components ─────────────────────────────────────────────────────
 	fet := fetcher.New(*timeout, *maxBody, *agent)
 	rob := robots.New(*agent)
-	rl  := ratelimiter.New(*crawlDelay)
+	rl := ratelimiter.New(*crawlDelay)
 
 	sem := make(chan struct{}, *numWorkers) // bounded concurrency
 
@@ -114,8 +110,13 @@ func main() {
 
 			// Dedup check via Redis SADD (returns 1 if new, 0 if exists)
 			added, err := rdb.SAdd(ctx, redisSeenKey, ev.URL).Result()
-			if err != nil || added == 0 {
-				return // already seen or Redis error
+			if err != nil {
+				log.Printf("[skip:redis-err] %s — %v", ev.URL, err)
+				return
+			}
+			if added == 0 {
+				log.Printf("[skip:duplicate] %s", ev.URL)
+				return
 			}
 
 			sem <- struct{}{}
