@@ -2,9 +2,6 @@ package events
 
 import "time"
 
-const TopicDiscovered = "discovered-urls"
-const TopicCrawled = "crawled-urls"
-
 type DiscoveredURL struct {
 	URL        string    `json:"url"`
 	Depth      int       `json:"depth"`
