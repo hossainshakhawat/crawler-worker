@@ -4,6 +4,13 @@
 // Multiple instances can run in parallel under the same consumer group
 // ("crawler-workers") – Kafka will distribute partitions across them.
 //
+// Configuration is loaded in this priority order (highest wins):
+//
+//  1. CLI flags
+//  2. Environment variables  (prefix WORKER_, e.g. WORKER_KAFKA_BROKER)
+//  3. config.yml             (must be in the working directory)
+//  4. Built-in defaults
+//
 // Usage:
 //
 //	crawler-worker [flags]
@@ -37,6 +44,7 @@ import (
 	"github.com/hossainshakhawat/crawler-worker/internal/redisconn"
 	"github.com/hossainshakhawat/crawler-worker/internal/robots"
 	"github.com/redis/go-redis/v9"
+	"github.com/spf13/viper"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -55,17 +63,48 @@ type config struct {
 	agent       string
 }
 
-func parseFlags() config {
-	var cfg config
-	flag.StringVar(&cfg.kafkaBroker, "kafka", "localhost:9092", "Kafka broker address")
-	flag.StringVar(&cfg.redisAddr, "redis", "localhost:6379", "Redis address for URL dedup")
-	flag.IntVar(&cfg.numWorkers, "workers", 8, "Parallel fetch goroutines")
-	flag.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "Per-request HTTP timeout")
-	flag.Int64Var(&cfg.maxBody, "max-body", 5<<20, "Maximum response body bytes")
-	flag.DurationVar(&cfg.crawlDelay, "crawl-delay", 1*time.Second, "Per-domain politeness delay")
-	flag.StringVar(&cfg.agent, "agent", "go-web-crawler/1.0", "User-Agent string")
+func loadConfig() config {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(".")
+
+	viper.SetDefault("kafka_broker", "localhost:9092")
+	viper.SetDefault("redis_addr", "localhost:6379")
+	viper.SetDefault("workers", 8)
+	viper.SetDefault("timeout", "15s")
+	viper.SetDefault("max_body", 5<<20)
+	viper.SetDefault("crawl_delay", "1s")
+	viper.SetDefault("agent", "go-web-crawler/1.0")
+
+	viper.SetEnvPrefix("WORKER")
+	viper.AutomaticEnv()
+
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			log.Fatalf("config: %v", err)
+		}
+	}
+
+	// Flags override env vars and config.yml; defaults come from Viper
+	// so env vars and config.yml flow through when flags are not set.
+	kafka := flag.String("kafka", viper.GetString("kafka_broker"), "Kafka broker address")
+	redisAddr := flag.String("redis", viper.GetString("redis_addr"), "Redis address for URL dedup")
+	workers := flag.Int("workers", viper.GetInt("workers"), "Parallel fetch goroutines")
+	timeout := flag.Duration("timeout", viper.GetDuration("timeout"), "Per-request HTTP timeout")
+	maxBody := flag.Int64("max-body", viper.GetInt64("max_body"), "Maximum response body bytes")
+	crawlDelay := flag.Duration("crawl-delay", viper.GetDuration("crawl_delay"), "Per-domain politeness delay")
+	agent := flag.String("agent", viper.GetString("agent"), "User-Agent string")
 	flag.Parse()
-	return cfg
+
+	return config{
+		kafkaBroker: *kafka,
+		redisAddr:   *redisAddr,
+		numWorkers:  *workers,
+		timeout:     *timeout,
+		maxBody:     *maxBody,
+		crawlDelay:  *crawlDelay,
+		agent:       *agent,
+	}
 }
 
 func listenForShutdown(cancel context.CancelFunc) {
@@ -77,7 +116,7 @@ func listenForShutdown(cancel context.CancelFunc) {
 func main() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 
-	cfg := parseFlags()
+	cfg := loadConfig()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
