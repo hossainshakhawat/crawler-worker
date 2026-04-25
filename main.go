@@ -160,7 +160,7 @@ func run(
 			wg.Add(1)
 			go func(event events.DiscoveredURL) {
 				defer func() { <-semaphore; wg.Done() }()
-					processURL(ctx, event, kafkaClient, httpFetcher, robotsChecker, rateLimiter, topicCrawled)
+				processURL(ctx, event, kafkaClient, httpFetcher, robotsChecker, rateLimiter, topicCrawled)
 			}(event)
 		})
 		wg.Wait()
