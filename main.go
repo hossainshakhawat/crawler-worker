@@ -6,30 +6,14 @@
 //
 // Configuration is loaded in this priority order (highest wins):
 //
-//  1. CLI flags
-//  2. Environment variables  (prefix WORKER_, e.g. WORKER_KAFKA_BROKER)
-//  3. config.yml             (must be in the working directory)
-//  4. Built-in defaults
-//
-// Usage:
-//
-//	crawler-worker [flags]
-//
-// Flags:
-//
-//	-kafka         Kafka broker address (default localhost:9092)
-//	-redis         Redis address for dedup (default localhost:6379)
-//	-workers       parallel fetch goroutines (default 8)
-//	-timeout       per-request HTTP timeout (default 15s)
-//	-max-body      maximum response body bytes (default 5 MiB)
-//	-crawl-delay   per-domain politeness delay (default 1s)
-//	-agent         User-Agent string
+//  1. Environment variables  (prefix WORKER_, e.g. WORKER_KAFKA_BROKER)
+//  2. config.yml             (must be in the working directory)
+//  3. Built-in defaults
 package main
 
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -68,14 +52,6 @@ func loadConfig() config {
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath(".")
 
-	viper.SetDefault("kafka_broker", "localhost:9092")
-	viper.SetDefault("redis_addr", "localhost:6379")
-	viper.SetDefault("workers", 8)
-	viper.SetDefault("timeout", "15s")
-	viper.SetDefault("max_body", 5<<20)
-	viper.SetDefault("crawl_delay", "1s")
-	viper.SetDefault("agent", "go-web-crawler/1.0")
-
 	viper.SetEnvPrefix("WORKER")
 	viper.AutomaticEnv()
 
@@ -85,25 +61,14 @@ func loadConfig() config {
 		}
 	}
 
-	// Flags override env vars and config.yml; defaults come from Viper
-	// so env vars and config.yml flow through when flags are not set.
-	kafka := flag.String("kafka", viper.GetString("kafka_broker"), "Kafka broker address")
-	redisAddr := flag.String("redis", viper.GetString("redis_addr"), "Redis address for URL dedup")
-	workers := flag.Int("workers", viper.GetInt("workers"), "Parallel fetch goroutines")
-	timeout := flag.Duration("timeout", viper.GetDuration("timeout"), "Per-request HTTP timeout")
-	maxBody := flag.Int64("max-body", viper.GetInt64("max_body"), "Maximum response body bytes")
-	crawlDelay := flag.Duration("crawl-delay", viper.GetDuration("crawl_delay"), "Per-domain politeness delay")
-	agent := flag.String("agent", viper.GetString("agent"), "User-Agent string")
-	flag.Parse()
-
 	return config{
-		kafkaBroker: *kafka,
-		redisAddr:   *redisAddr,
-		numWorkers:  *workers,
-		timeout:     *timeout,
-		maxBody:     *maxBody,
-		crawlDelay:  *crawlDelay,
-		agent:       *agent,
+		kafkaBroker: viper.GetString("kafka_broker"),
+		redisAddr:   viper.GetString("redis_addr"),
+		numWorkers:  viper.GetInt("workers"),
+		timeout:     viper.GetDuration("timeout"),
+		maxBody:     viper.GetInt64("max_body"),
+		crawlDelay:  viper.GetDuration("crawl_delay"),
+		agent:       viper.GetString("agent"),
 	}
 }
 
